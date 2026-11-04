@@ -9,6 +9,8 @@ router.use(protect, authorize('vendor', 'admin'));
 
 router.post('/image', upload.single('image'), uploadImage);
 router.post('/images', upload.array('images', 8), uploadImages);
-router.delete('/image', deleteImage);
+// Deleting is admin-only: Cloudinary image IDs aren't tied to an owner, so a
+// vendor could otherwise delete another vendor's product images.
+router.delete('/image', authorize('admin'), deleteImage);
 
 module.exports = router;

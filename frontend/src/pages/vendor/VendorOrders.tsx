@@ -5,7 +5,16 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Package, Clock, CheckCircle, XCircle, Truck, CreditCard, Phone, User } from 'lucide-react';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogTrigger,
+} from '@/components/ui/dialog';
+import { Package, Clock, CheckCircle, XCircle, Truck, CreditCard, Phone, User, AlertTriangle } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 interface OrderItem {
@@ -39,6 +48,14 @@ interface Order {
   paymentReference?: string;
   trackingNumber?: string;
   createdAt: string;
+  dispute?: {
+    status: 'none' | 'open' | 'resolved';
+    reason?: string;
+    description?: string;
+    raisedAt?: string;
+    resolution?: string;
+    resolvedAt?: string;
+  };
 }
 
 export default function VendorOrdersPage() {
@@ -48,6 +65,9 @@ export default function VendorOrdersPage() {
   const [paymentFilter, setPaymentFilter] = useState<string>('all');
   const [approvingPayment, setApprovingPayment] = useState<string | null>(null);
   const [updatingStatus, setUpdatingStatus] = useState<string | null>(null);
+  const [resolvingOrderId, setResolvingOrderId] = useState<string | null>(null);
+  const [resolutionText, setResolutionText] = useState('');
+  const [submittingResolution, setSubmittingResolution] = useState(false);
   const navigate = useNavigate();
   const { toast } = useToast();
 
@@ -152,6 +172,47 @@ export default function VendorOrdersPage() {
     }
   };
 
+  const handleResolveDispute = async () => {
+    if (!resolvingOrderId) return;
+
+    if (!resolutionText.trim()) {
+      toast({
+        title: 'Resolution required',
+        description: 'Please describe how this was resolved.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setSubmittingResolution(true);
+    try {
+      const response = await api.resolveDispute(resolvingOrderId, {
+        resolution: resolutionText.trim(),
+      });
+
+      if (response.success) {
+        toast({
+          title: 'Dispute resolved',
+          description: 'The customer will see your resolution on their order.',
+        });
+
+        setOrders(orders.map((order) =>
+          order._id === resolvingOrderId ? { ...order, dispute: response.data.dispute } : order
+        ));
+        setResolvingOrderId(null);
+        setResolutionText('');
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Error',
+        description: error.message || 'Failed to resolve dispute. Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmittingResolution(false);
+    }
+  };
+
   const getStatusIcon = (status: string) => {
     switch (status) {
       case 'pending':
@@ -227,10 +288,9 @@ export default function VendorOrdersPage() {
     );
   }
 
-   return (
+  return (
     <div>
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 mb-8">
-          <h1 className="text-4xl font-bold">Vendor Orders</h1>
           <h1 className="text-4xl font-bold">Vendor Orders</h1>
           
           <div className="flex gap-4">
@@ -304,6 +364,18 @@ export default function VendorOrdersPage() {
                           <span className="ml-1 capitalize">{order.status}</span>
                         </Badge>
                         {getPaymentStatusBadge(order.paymentStatus)}
+                        {order.dispute?.status === 'open' && (
+                          <Badge variant="destructive">
+                            <AlertTriangle className="h-3 w-3 mr-1" />
+                            Dispute Open
+                          </Badge>
+                        )}
+                        {order.dispute?.status === 'resolved' && (
+                          <Badge variant="outline">
+                            <AlertTriangle className="h-3 w-3 mr-1" />
+                            Dispute Resolved
+                          </Badge>
+                        )}
                       </div>
                     </div>
 
@@ -403,6 +475,69 @@ export default function VendorOrdersPage() {
                       </div>
                     </div>
 
+                    {/* Dispute details - only shown when a customer has reported a problem */}
+                    {order.dispute && order.dispute.status !== 'none' && (
+                      <div className="border-t pt-4">
+                        <div className="p-4 rounded-lg bg-amber-50 border border-amber-200 space-y-2">
+                          <div className="flex items-center gap-2 text-sm font-semibold text-amber-800">
+                            <AlertTriangle className="h-4 w-4" />
+                            Customer reported a problem
+                          </div>
+                          <p className="text-sm"><span className="text-muted-foreground">Reason:</span> {order.dispute.reason}</p>
+                          {order.dispute.description && (
+                            <p className="text-sm"><span className="text-muted-foreground">Details:</span> {order.dispute.description}</p>
+                          )}
+                          {order.dispute.status === 'resolved' ? (
+                            <p className="text-sm pt-2 border-t border-amber-200">
+                              <span className="text-muted-foreground">Resolution:</span> {order.dispute.resolution}
+                            </p>
+                          ) : (
+                            <Dialog
+                              open={resolvingOrderId === order._id}
+                              onOpenChange={(open) => {
+                                setResolvingOrderId(open ? order._id : null);
+                                if (!open) setResolutionText('');
+                              }}
+                            >
+                              <DialogTrigger asChild>
+                                <Button size="sm" variant="outline" className="mt-1 bg-white">
+                                  Mark as Resolved
+                                </Button>
+                              </DialogTrigger>
+                              <DialogContent>
+                                <DialogHeader>
+                                  <DialogTitle>Resolve dispute</DialogTitle>
+                                </DialogHeader>
+                                <div className="py-2 space-y-2">
+                                  <p className="text-sm text-muted-foreground">
+                                    Describe how this was resolved — the customer will see this.
+                                  </p>
+                                  <Textarea
+                                    value={resolutionText}
+                                    onChange={(e) => setResolutionText(e.target.value)}
+                                    placeholder="e.g. Replacement item shipped on Oct 14."
+                                    rows={4}
+                                  />
+                                </div>
+                                <DialogFooter>
+                                  <Button
+                                    variant="ghost"
+                                    onClick={() => setResolvingOrderId(null)}
+                                    disabled={submittingResolution}
+                                  >
+                                    Cancel
+                                  </Button>
+                                  <Button onClick={handleResolveDispute} disabled={submittingResolution}>
+                                    {submittingResolution ? 'Saving...' : 'Confirm Resolution'}
+                                  </Button>
+                                </DialogFooter>
+                              </DialogContent>
+                            </Dialog>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
                     {/* Action Buttons */}
                     <div className="flex flex-col sm:flex-row gap-3 pt-4 border-t">
                       {/* Approve Payment Button - NEW */}
@@ -450,6 +585,6 @@ export default function VendorOrdersPage() {
             ))}
           </div>
         )}
-      </div>
+    </div>
   );
 }

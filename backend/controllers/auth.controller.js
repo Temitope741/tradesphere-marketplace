@@ -2,6 +2,7 @@
 const User = require('../models/User.model');
 const { sendTokenResponse } = require('../utils/generateToken');
 const crypto = require('crypto');
+const sendEmail = require('../utils/sendEmail');
 
 // @desc    Register user
 // @route   POST /api/auth/register
@@ -10,8 +11,12 @@ exports.register = async (req, res, next) => {
   try {
     const { fullName, email, password, role, phone, address } = req.body;
 
-    // Validate required fields
-    if (!fullName || !email || !password) {
+    // Validate required fields (and make sure they are plain text, not objects)
+    if (
+      typeof fullName !== 'string' || !fullName.trim() ||
+      typeof email !== 'string' || !email.trim() ||
+      typeof password !== 'string' || !password
+    ) {
       return res.status(400).json({
         success: false,
         message: 'Please provide fullName, email, and password'
@@ -19,7 +24,7 @@ exports.register = async (req, res, next) => {
     }
 
     // Check if user exists
-    const existingUser = await User.findOne({ email });
+    const existingUser = await User.findOne({ email: email.trim().toLowerCase() });
     if (existingUser) {
       return res.status(400).json({
         success: false,
@@ -27,12 +32,18 @@ exports.register = async (req, res, next) => {
       });
     }
 
+    // Security: public sign-up may only create customers or vendors.
+    // Without this, anyone could send { "role": "admin" } and become an admin.
+    // Admin accounts must be created directly in the database / seeder.
+    const allowedSignupRoles = ['customer', 'vendor'];
+    const safeRole = allowedSignupRoles.includes(role) ? role : 'customer';
+
     // Create user
     const user = await User.create({
       fullName,
       email,
       password,
-      role: role || 'customer',
+      role: safeRole,
       phone,
       address
     });
@@ -51,8 +62,11 @@ exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    // Validate email & password
-    if (!email || !password) {
+    // Validate email & password (must be plain text, not objects)
+    if (
+      typeof email !== 'string' || !email.trim() ||
+      typeof password !== 'string' || !password
+    ) {
       return res.status(400).json({
         success: false,
         message: 'Please provide email and password'
@@ -60,7 +74,7 @@ exports.login = async (req, res, next) => {
     }
 
     // Check for user (include password for comparison)
-    const user = await User.findOne({ email }).select('+password');
+    const user = await User.findOne({ email: email.trim().toLowerCase() }).select('+password');
 
     if (!user) {
       return res.status(401).json({
@@ -137,7 +151,10 @@ exports.updatePassword = async (req, res, next) => {
   try {
     const { currentPassword, newPassword } = req.body;
 
-    if (!currentPassword || !newPassword) {
+    if (
+      typeof currentPassword !== 'string' || !currentPassword ||
+      typeof newPassword !== 'string' || !newPassword
+    ) {
       return res.status(400).json({
         success: false,
         message: 'Please provide current and new password'
@@ -172,13 +189,26 @@ exports.forgotPassword = async (req, res, next) => {
   try {
     const { email } = req.body;
 
-    const user = await User.findOne({ email });
-
-    if (!user) {
-      return res.status(404).json({
+    if (typeof email !== 'string' || !email.trim()) {
+      return res.status(400).json({
         success: false,
-        message: 'No user found with that email'
+        message: 'Please provide your email'
       });
+    }
+
+    // Same answer whether or not the account exists, so this endpoint can't
+    // be used to find out which emails are registered.
+    const genericResponse = () =>
+      res.status(200).json({
+        success: true,
+        message: 'If an account exists for that email, a password reset link has been sent.',
+        data: {}
+      });
+
+    const user = await User.findOne({ email: email.trim().toLowerCase() });
+
+    if (!user || !user.isActive) {
+      return genericResponse();
     }
 
     // Generate reset token
@@ -195,18 +225,30 @@ exports.forgotPassword = async (req, res, next) => {
 
     await user.save({ validateBeforeSave: false });
 
-    // Create reset url
-    const resetUrl = `${req.protocol}://${req.get('host')}/reset-password/${resetToken}`;
+    // Build the link from OUR configured frontend address, never from the
+    // request's Host header (which an attacker can fake).
+    const frontendUrl =
+      process.env.FRONTEND_URL || process.env.CLIENT_URL || 'http://localhost:5173';
+    const resetUrl = `${frontendUrl}/reset-password/${resetToken}`;
 
-    // TODO: Send email with resetUrl
-    // For now, just return the token (in production, send via email)
-    
-    res.status(200).json({
-      success: true,
-      message: 'Password reset token generated',
-      resetToken, // Remove this in production
-      data: {}
+    // The token is sent ONLY by email — it must never appear in the API
+    // response, otherwise anyone could reset anyone's password.
+    const sent = await sendEmail({
+      email: user.email,
+      subject: 'Reset your TradeSphere password',
+      message: `You asked to reset your password. Open this link within 10 minutes:\n\n${resetUrl}\n\nIf you didn't ask for this, you can ignore this email.`
     });
+
+    if (!sent) {
+      if (process.env.NODE_ENV === 'production') {
+        console.warn('Password reset requested but email is not configured (SMTP_* variables).');
+      } else {
+        // Local development only: print the link in the server terminal.
+        console.log(`🔑 [DEV ONLY] Password reset link for ${user.email}: ${resetUrl}`);
+      }
+    }
+
+    return genericResponse();
   } catch (error) {
     next(error);
   }
@@ -219,7 +261,7 @@ exports.resetPassword = async (req, res, next) => {
   try {
     const { password } = req.body;
 
-    if (!password) {
+    if (typeof password !== 'string' || !password) {
       return res.status(400).json({
         success: false,
         message: 'Please provide a new password'

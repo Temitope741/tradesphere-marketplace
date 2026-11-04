@@ -7,7 +7,9 @@ const {
   updateOrderStatus,
   verifyPayment,
   confirmBankTransfer,
-  approvePayment
+  approvePayment,
+  raiseDispute,
+  resolveDispute
 } = require('../controllers/order.controller');
 const { protect } = require('../middleware/auth.middleware');
 const { isVendor } = require('../middleware/roleCheck.middleware');
@@ -26,9 +28,11 @@ router.post('/verify-payment', verifyPayment);
 router.get('/', getMyOrders);
 router.get('/:id', getOrder);
 router.put('/:id/confirm-transfer', confirmBankTransfer);
+router.post('/:id/dispute', raiseDispute);
 
 // Vendor routes - IMPORTANT: These must be defined
 router.put('/:id/approve-payment', isVendor, approvePayment);
 router.put('/:id/status', isVendor, updateOrderStatus);
+router.put('/:id/dispute/resolve', isVendor, resolveDispute);
 
 module.exports = router;

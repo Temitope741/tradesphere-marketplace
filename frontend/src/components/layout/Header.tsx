@@ -17,7 +17,7 @@ import {
   SheetTitle,
   SheetTrigger,
 } from '@/components/ui/sheet';
-import { ShoppingCart, Search, User, LogOut, Package, Heart, Menu, X } from 'lucide-react';
+import { ShoppingCart, Search, User, LogOut, Package, Heart, Menu, X, ShieldCheck } from 'lucide-react';
 import api from '../../services/api';
 import { useToast } from '@/hooks/use-toast';
 
@@ -226,6 +226,18 @@ export const Header = ({ cartItemCount = 0 }: HeaderProps) => {
                       </>
                     )}
 
+                    {user.role === 'admin' && (
+                      <>
+                        <DropdownMenuSeparator />
+                        <DropdownMenuItem asChild>
+                          <Link to="/admin/dashboard" className="cursor-pointer">
+                            <ShieldCheck className="mr-2 h-4 w-4" />
+                            Admin Console
+                          </Link>
+                        </DropdownMenuItem>
+                      </>
+                    )}
+
                     <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={handleSignOut} className="cursor-pointer">
                       <LogOut className="mr-2 h-4 w-4" />
@@ -329,6 +341,17 @@ export const Header = ({ cartItemCount = 0 }: HeaderProps) => {
                         </>
                       )}
 
+                      {user.role === 'admin' && (
+                        <div className="border-t pt-4">
+                          <Link to="/admin/dashboard" onClick={closeMobileMenu}>
+                            <Button variant="ghost" className="w-full justify-start" size="lg">
+                              <ShieldCheck className="mr-2 h-5 w-5" />
+                              Admin Console
+                            </Button>
+                          </Link>
+                        </div>
+                      )}
+
                       <div className="border-t pt-4">
                         <Button 
                           variant="ghost" 
@@ -391,4 +414,4 @@ export const Header = ({ cartItemCount = 0 }: HeaderProps) => {
       </div>
     </header>
   );
-};
+};  

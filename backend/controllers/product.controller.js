@@ -1,5 +1,17 @@
 // controllers/product.controller.js
+const mongoose = require('mongoose');
 const Product = require('../models/Product.model');
+
+// Make user-typed search text safe to use inside a regular expression
+// (stops "regex injection" / patterns designed to freeze the database).
+const escapeRegex = (text) => String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+// Keep page / limit numbers sane so nobody can request 1,000,000 products.
+const safePaging = (query, defaultLimit = 12, maxLimit = 50) => {
+  const page = Math.max(parseInt(query.page, 10) || 1, 1);
+  const limit = Math.min(Math.max(parseInt(query.limit, 10) || defaultLimit, 1), maxLimit);
+  return { page, limit };
+};
 
 // @desc    Get all products with filters, search, and pagination
 // @route   GET /api/products
@@ -8,20 +20,22 @@ exports.getAllProducts = async (req, res, next) => {
   try {
     console.time('Products Query'); // ✅ TRACK PERFORMANCE
     
-    const { page = 1, limit = 12, search, category, minPrice, maxPrice, rating } = req.query;
+    const { search, category, minPrice, maxPrice, rating } = req.query;
+    const { page, limit } = safePaging(req.query);
 
     let filter = { isActive: true }; // ✅ ONLY SHOW ACTIVE PRODUCTS
 
     // Search filter
-    if (search) {
+    if (typeof search === 'string' && search.trim()) {
+      const pattern = escapeRegex(search.trim().slice(0, 100));
       filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { description: { $regex: search, $options: 'i' } }
+        { name: { $regex: pattern, $options: 'i' } },
+        { description: { $regex: pattern, $options: 'i' } }
       ];
     }
 
     // Category filter
-    if (category) {
+    if (typeof category === 'string' && mongoose.isValidObjectId(category)) {
       filter.category = category;
     }
 
@@ -38,7 +52,7 @@ exports.getAllProducts = async (req, res, next) => {
 
     }
 
-    const skip = (Number(page) - 1) * Number(limit);
+    const skip = (page - 1) * limit;
 
     // ✅ OPTIMIZED QUERY - ONLY SELECT NEEDED FIELDS + USE .lean()
     const products = await Product.find(filter)
@@ -47,7 +61,7 @@ exports.getAllProducts = async (req, res, next) => {
       .populate('vendor', 'fullName')
       .lean() // ✅ FASTER QUERIES - RETURNS PLAIN JS OBJECTS
       .skip(skip)
-      .limit(Number(limit))
+      .limit(limit)
       .sort({ createdAt: -1 })
       .maxTimeMS(5000); // ✅ TIMEOUT AFTER 5 SECONDS
 
@@ -60,8 +74,8 @@ exports.getAllProducts = async (req, res, next) => {
       success: true,
       count: products.length,
       total: totalProducts,
-      pages: Math.ceil(totalProducts / Number(limit)),
-      currentPage: Number(page),
+      pages: Math.ceil(totalProducts / limit),
+      currentPage: page,
       data: products
     });
   } catch (error) {
@@ -79,7 +93,7 @@ exports.getProductById = async (req, res, next) => {
     
     const product = await Product.findById(req.params.id)
       .populate('category', 'name slug')
-      .populate('vendor', 'fullName email phone')
+      .populate('vendor', 'fullName') // public page: never expose vendor email/phone
       .populate({
         path: 'reviews',
         select: 'rating comment user createdAt',
@@ -135,7 +149,7 @@ exports.createProduct = async (req, res, next) => {
       });
     }
 
-        // Keep imageUrl (used by product listings, cart, orders, etc.) in sync
+    // Keep imageUrl (used by product listings, cart, orders, etc.) in sync
     // with the first/primary image whenever a gallery is provided.
     const normalizedImages = Array.isArray(images) ? images.filter(Boolean) : [];
     const primaryImageUrl = normalizedImages[0] || imageUrl;
@@ -193,7 +207,8 @@ exports.updateProduct = async (req, res, next) => {
         updates[field] = req.body[field];
       }
     });
-       // Keep imageUrl in sync with the first/primary image whenever a
+
+    // Keep imageUrl in sync with the first/primary image whenever a
     // gallery is included in this update.
     if (Array.isArray(updates.images)) {
       const normalizedImages = updates.images.filter(Boolean);
@@ -202,6 +217,7 @@ exports.updateProduct = async (req, res, next) => {
         updates.imageUrl = normalizedImages[0];
       }
     }
+
     product = await Product.findByIdAndUpdate(
       req.params.id, 
       updates, 
@@ -260,10 +276,14 @@ exports.deleteProduct = async (req, res, next) => {
 // @access  Public
 exports.getProductsByCategory = async (req, res, next) => {
   try {
-    const { page = 1, limit = 12 } = req.query;
-    const skip = (Number(page) - 1) * Number(limit);
+    const { page, limit } = safePaging(req.query);
+    const skip = (page - 1) * limit;
 
-    const products = await Product.find({ 
+    if (!mongoose.isValidObjectId(req.params.categoryId)) {
+      return res.status(404).json({ success: false, message: 'Category not found' });
+    }
+
+    const products = await Product.find({
       category: req.params.categoryId, 
       isActive: true 
     })
@@ -272,19 +292,19 @@ exports.getProductsByCategory = async (req, res, next) => {
       .populate('vendor', 'fullName')
       .lean()
       .skip(skip)
-      .limit(Number(limit))
+      .limit(limit)
       .sort({ createdAt: -1 });
 
-    const total = await Product.countDocuments({ 
-      category: req.params.categoryId, 
-      isActive: true 
+    const total = await Product.countDocuments({
+      category: req.params.categoryId,
+      isActive: true
     });
 
     res.status(200).json({
       success: true,
       count: products.length,
       total,
-      pages: Math.ceil(total / Number(limit)),
+      pages: Math.ceil(total / limit),
       data: products
     });
   } catch (error) {
@@ -297,7 +317,7 @@ exports.getProductsByCategory = async (req, res, next) => {
 // @access  Public
 exports.getTopRatedProducts = async (req, res, next) => {
   try {
-    const limit = req.query.limit || 10;
+    const { limit } = safePaging(req.query, 10, 50);
 
     const products = await Product.find({ isActive: true })
       .select('name price imageUrl category vendor averageRating')
@@ -305,7 +325,7 @@ exports.getTopRatedProducts = async (req, res, next) => {
       .populate('vendor', 'fullName')
       .lean()
       .sort({ averageRating: -1, totalReviews: -1 })
-      .limit(Number(limit));
+      .limit(limit);
 
     res.status(200).json({
       success: true,

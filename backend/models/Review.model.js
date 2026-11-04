@@ -35,9 +35,19 @@ reviewSchema.post('save', async function() {
   await this.constructor.updateProductRating(this.product);
 });
 
-// Update product rating after review is deleted
-reviewSchema.post('remove', async function() {
+// Update product rating after review is deleted.
+// (Mongoose 8 removed document.remove(); deleteOne() is the replacement, and
+// its hook has to be registered as a document-level 'deleteOne' hook.)
+reviewSchema.post('deleteOne', { document: true, query: false }, async function() {
   await this.constructor.updateProductRating(this.product);
+});
+
+// Update product rating after a review is edited (updateReview uses
+// findByIdAndUpdate, which does not trigger the 'save' hook above).
+reviewSchema.post('findOneAndUpdate', async function(doc) {
+  if (doc) {
+    await doc.constructor.updateProductRating(doc.product);
+  }
 });
 
 // Static method to update product rating

@@ -4,8 +4,19 @@ import api from '@/services/api';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
+import { Label } from '@/components/ui/label';
+import { Input } from '@/components/ui/input';
+import { Textarea } from '@/components/ui/textarea';
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+  DialogTrigger,
+} from '@/components/ui/dialog';
 import { OrderStatusTimeline, StatusHistoryEntry } from '@/components/orders/OrderStatusTimeline';
-import { ArrowLeft, Package, CheckCircle, Clock, CreditCard } from 'lucide-react';
+import { ArrowLeft, Package, CheckCircle, Clock, CreditCard, AlertTriangle, Flag } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 
 interface OrderItem {
@@ -18,6 +29,15 @@ interface OrderItem {
   quantity: number;
   unitPrice: number;
   totalPrice: number;
+}
+
+interface Dispute {
+  status: 'none' | 'open' | 'resolved';
+  reason?: string;
+  description?: string;
+  raisedAt?: string;
+  resolution?: string;
+  resolvedAt?: string;
 }
 
 interface OrderDetail {
@@ -38,6 +58,17 @@ interface OrderDetail {
   paymentStatus: string;
   trackingNumber?: string;
   createdAt: string;
+  dispute?: Dispute;
+}
+
+function formatDateTime(dateString: string) {
+  return new Date(dateString).toLocaleDateString('en-US', {
+    year: 'numeric',
+    month: 'short',
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+  });
 }
 
 function getPaymentStatusBadge(paymentStatus: string) {
@@ -72,6 +103,10 @@ export default function OrderDetailPage() {
   const { toast } = useToast();
   const [order, setOrder] = useState<OrderDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [disputeOpen, setDisputeOpen] = useState(false);
+  const [disputeReason, setDisputeReason] = useState('');
+  const [disputeDescription, setDisputeDescription] = useState('');
+  const [submittingDispute, setSubmittingDispute] = useState(false);
 
   useEffect(() => {
     if (id) fetchOrder();
@@ -98,6 +133,43 @@ export default function OrderDetailPage() {
       });
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleRaiseDispute = async () => {
+    if (!disputeReason.trim()) {
+      toast({
+        title: 'Reason required',
+        description: 'Please give a short reason for the problem.',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setSubmittingDispute(true);
+    try {
+      const response = await api.raiseDispute(id!, {
+        reason: disputeReason.trim(),
+        description: disputeDescription.trim(),
+      });
+      if (response.success) {
+        setOrder(response.data);
+        setDisputeOpen(false);
+        setDisputeReason('');
+        setDisputeDescription('');
+        toast({
+          title: 'Problem reported',
+          description: 'The vendor has been notified and will follow up with you.',
+        });
+      }
+    } catch (error: any) {
+      toast({
+        title: 'Could not report this problem',
+        description: error.message || 'Please try again.',
+        variant: 'destructive',
+      });
+    } finally {
+      setSubmittingDispute(false);
     }
   };
 
@@ -193,6 +265,97 @@ export default function OrderDetailPage() {
             </div>
           </CardContent>
         </Card>
+
+        {/* Dispute status, if one has been raised */}
+        {order.dispute && order.dispute.status !== 'none' && (
+          <Card className="mb-6 border-amber-400/40 bg-amber-50/50 dark:bg-amber-950/10">
+            <CardHeader>
+              <CardTitle className="text-base font-semibold flex items-center gap-2">
+                <AlertTriangle className="h-4 w-4 text-amber-600" />
+                Reported Problem
+                <Badge variant={order.dispute.status === 'resolved' ? 'default' : 'secondary'}>
+                  {order.dispute.status === 'resolved' ? 'Resolved' : 'Open'}
+                </Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3 text-sm">
+              <div>
+                <p className="text-muted-foreground">Reason</p>
+                <p className="font-medium">{order.dispute.reason}</p>
+              </div>
+              {order.dispute.description && (
+                <div>
+                  <p className="text-muted-foreground">Details</p>
+                  <p>{order.dispute.description}</p>
+                </div>
+              )}
+              {order.dispute.raisedAt && (
+                <p className="text-xs text-muted-foreground">
+                  Reported on {formatDateTime(order.dispute.raisedAt)}
+                </p>
+              )}
+              {order.dispute.status === 'resolved' && order.dispute.resolution && (
+                <div className="pt-2 border-t">
+                  <p className="text-muted-foreground">Vendor's resolution</p>
+                  <p className="font-medium">{order.dispute.resolution}</p>
+                  {order.dispute.resolvedAt && (
+                    <p className="text-xs text-muted-foreground mt-1">
+                      Resolved on {formatDateTime(order.dispute.resolvedAt)}
+                    </p>
+                  )}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+        )}
+
+        {/* Report a problem */}
+        {(!order.dispute || order.dispute.status === 'none') && (
+          <div className="mb-6">
+            <Dialog open={disputeOpen} onOpenChange={setDisputeOpen}>
+              <DialogTrigger asChild>
+                <Button variant="outline" className="text-destructive border-destructive/40 hover:bg-destructive/5">
+                  <Flag className="mr-2 h-4 w-4" />
+                  Report a Problem
+                </Button>
+              </DialogTrigger>
+              <DialogContent>
+                <DialogHeader>
+                  <DialogTitle>Report a problem with this order</DialogTitle>
+                </DialogHeader>
+                <div className="space-y-4 py-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="dispute-reason">What went wrong?</Label>
+                    <Input
+                      id="dispute-reason"
+                      placeholder="e.g. Item not delivered, wrong item, damaged"
+                      value={disputeReason}
+                      onChange={(e) => setDisputeReason(e.target.value)}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="dispute-description">More details (optional)</Label>
+                    <Textarea
+                      id="dispute-description"
+                      placeholder="Add any extra details that will help the vendor sort this out."
+                      value={disputeDescription}
+                      onChange={(e) => setDisputeDescription(e.target.value)}
+                      rows={4}
+                    />
+                  </div>
+                </div>
+                <DialogFooter>
+                  <Button variant="ghost" onClick={() => setDisputeOpen(false)} disabled={submittingDispute}>
+                    Cancel
+                  </Button>
+                  <Button onClick={handleRaiseDispute} disabled={submittingDispute}>
+                    {submittingDispute ? 'Submitting...' : 'Submit Report'}
+                  </Button>
+                </DialogFooter>
+              </DialogContent>
+            </Dialog>
+          </div>
+        )}
 
         {/* Order details */}
         <Card>

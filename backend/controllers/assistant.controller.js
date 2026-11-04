@@ -43,10 +43,12 @@ async function runSearchProducts(args = {}) {
   const { query, minPrice, maxPrice, limit = 6 } = args;
   const filter = { isActive: true };
 
-  if (query) {
+  if (typeof query === 'string' && query.trim()) {
+    // Escape regex characters — the text comes from the AI model / user.
+    const pattern = query.trim().slice(0, 100).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [
-      { name: { $regex: query, $options: 'i' } },
-      { description: { $regex: query, $options: 'i' } },
+      { name: { $regex: pattern, $options: 'i' } },
+      { description: { $regex: pattern, $options: 'i' } },
     ];
   }
 
@@ -82,7 +84,20 @@ exports.chat = async (req, res, next) => {
     }
 
     // Cap history sent to the model — keeps latency/quota usage predictable.
-    const trimmed = messages.slice(-10);
+    // Each message must be plain text and is cut to 1000 characters so a
+    // single request can't burn a huge amount of quota.
+    const trimmed = messages
+      .slice(-10)
+      .filter((m) => m && typeof m.content === 'string' && m.content.trim())
+      .map((m) => ({ role: m.role, content: m.content.slice(0, 1000) }));
+
+    if (trimmed.length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'messages must contain text',
+      });
+    }
+
     const lastMessage = trimmed[trimmed.length - 1];
     const priorHistory = trimmed.slice(0, -1);
 

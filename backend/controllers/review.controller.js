@@ -104,7 +104,7 @@ exports.deleteReview = async (req, res, next) => {
       return ApiResponse.error(res, 'Not authorized', 403);
     }
 
-    await review.remove();
+    await review.deleteOne();
 
     ApiResponse.success(res, {}, 'Review deleted');
   } catch (error) {

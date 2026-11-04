@@ -20,6 +20,16 @@ exports.createOrder = async (req, res, next) => {
       return ApiResponse.error(res, 'Phone number is required', 400);
     }
 
+    if (typeof shippingAddress !== 'string' || typeof phone !== 'string') {
+      return ApiResponse.error(res, 'Invalid shipping address or phone number', 400);
+    }
+
+    // Only the payment methods the checkout page actually offers are accepted.
+    const allowedMethods = ['cash_on_delivery', 'bank_transfer', 'nomba'];
+    if (paymentMethod !== undefined && !allowedMethods.includes(paymentMethod)) {
+      return ApiResponse.error(res, 'Unsupported payment method', 400);
+    }
+
     // Get cart
     const cart = await Cart.findOne({ user: req.user._id }).populate('items.product');
 
@@ -58,26 +68,19 @@ exports.createOrder = async (req, res, next) => {
       totalAmount += itemTotal;
     }
 
-    // Determine payment status based on payment method
-    let paymentStatus = 'pending';
-    if (paymentMethod === 'card' && paymentReference) {
-      paymentStatus = 'paid';
-    } else if (paymentMethod === 'bank_transfer') {
-      paymentStatus = 'pending';
-    } else if (paymentMethod === 'cash_on_delivery') {
-      paymentStatus = 'pending';
-    } else if (paymentMethod === 'nomba') {
-      // Payment happens after redirect to Nomba's hosted checkout page —
-      // the webhook (or the verify-payment poll) flips this to 'paid'.
-      paymentStatus = 'pending';
-    }
+    // Every new order starts as 'pending' — the customer's own request is
+    // never trusted to say "I already paid". Only Nomba's verified webhook /
+    // verify-payment check, or the vendor approving a bank transfer, can
+    // change it. (Previously sending paymentMethod "card" plus any made-up
+    // reference marked the order as paid.)
+    const paymentStatus = 'pending';
 
     // Create orders for each vendor
     const orders = [];
     for (const [vendorId, vendorItems] of Object.entries(vendorGroups)) {
       const vendorTotal = vendorItems.reduce((sum, item) => sum + item.totalPrice, 0);
 
-          const order = await Order.create({
+      const order = await Order.create({
         customer: req.user._id,
         vendor: vendorId,
         items: vendorItems,
@@ -86,8 +89,8 @@ exports.createOrder = async (req, res, next) => {
         phone,
         paymentMethod: paymentMethod || 'cash_on_delivery',
         paymentStatus,
-        paymentReference: paymentReference || null,
-        statusHistory: [{ status: 'pending', changedAt: new Date() }]
+        paymentReference: typeof paymentReference === 'string' ? paymentReference : null,
+        statusHistory: [{ status: 'pending', changedAt: new Date(), changedByRole: 'system' }]
       });
 
       // Reduce stock for each product
@@ -152,9 +155,13 @@ exports.verifyPayment = async (req, res, next) => {
   try {
     const { reference } = req.body;
 
-    if (!reference) {
+    if (!reference || typeof reference !== 'string') {
       return ApiResponse.error(res, 'Payment reference is required', 400);
     }
+
+    // Only ever look at the signed-in customer's OWN orders, so knowing
+    // someone else's reference can't reveal or touch their orders.
+    const ownOrders = { paymentReference: reference, customer: req.user._id };
 
     // Ask Nomba directly — this is real server-side verification, not just
     // trusting our own DB (which the webhook updates asynchronously).
@@ -165,7 +172,7 @@ exports.verifyPayment = async (req, res, next) => {
       console.error('Nomba transaction fetch failed:', nombaError);
       // Fall back to whatever our DB currently says (e.g. webhook already
       // landed) rather than failing the request outright.
-      const orders = await Order.find({ paymentReference: reference });
+      const orders = await Order.find(ownOrders);
       const allPaid = orders.length > 0 && orders.every((o) => ['paid', 'approved'].includes(o.paymentStatus));
       return ApiResponse.success(res, { orders, paid: allPaid }, allPaid ? 'Payment verified successfully' : 'Payment still pending');
     }
@@ -174,12 +181,12 @@ exports.verifyPayment = async (req, res, next) => {
 
     if (isPaid) {
       await Order.updateMany(
-        { paymentReference: reference, paymentStatus: { $ne: 'paid' } },
+        { ...ownOrders, paymentStatus: { $nin: ['paid', 'approved'] } },
         { paymentStatus: 'paid' }
       );
     }
 
-    const orders = await Order.find({ paymentReference: reference });
+    const orders = await Order.find(ownOrders);
 
     if (!orders.length) {
       return ApiResponse.error(res, 'No orders found for this reference', 404);
@@ -202,6 +209,10 @@ exports.confirmBankTransfer = async (req, res, next) => {
   try {
     const { transferReference } = req.body;
 
+    if (typeof transferReference !== 'string' || !transferReference.trim()) {
+      return ApiResponse.error(res, 'A transfer reference is required', 400);
+    }
+
     const order = await Order.findById(req.params.id);
     if (!order) {
       return ApiResponse.error(res, 'Order not found', 404);
@@ -211,7 +222,16 @@ exports.confirmBankTransfer = async (req, res, next) => {
       return ApiResponse.error(res, 'Not authorized', 403);
     }
 
-    order.paymentReference = transferReference;
+    if (order.paymentMethod !== 'bank_transfer') {
+      return ApiResponse.error(res, 'This order is not a bank transfer order', 400);
+    }
+
+    // Once the vendor has approved the payment, the reference is locked.
+    if (order.paymentStatus === 'approved') {
+      return ApiResponse.error(res, 'Payment has already been approved', 400);
+    }
+
+    order.paymentReference = transferReference.trim();
     order.paymentStatus = 'pending';
     await order.save();
 
@@ -332,14 +352,109 @@ exports.updateOrderStatus = async (req, res, next) => {
       return ApiResponse.error(res, 'Not authorized', 403);
     }
 
-      order.status = status;
+    // Delivered and cancelled are final. Without this, a vendor could quietly
+    // flip a delivered order back (or revive a cancelled one) after a dispute.
+    if (['delivered', 'cancelled'].includes(order.status) && status !== order.status) {
+      return ApiResponse.error(
+        res,
+        `This order is already ${order.status} and its status can no longer be changed`,
+        400
+      );
+    }
+
+    order.status = status;
+    // Only record a new timeline step if the status actually changed (or
+    // this is the very first entry — older orders created before this
+    // field existed won't have one yet). changedBy/changedByRole record
+    // WHO made the change, so the timeline doubles as an audit trail.
     const lastEntry = order.statusHistory[order.statusHistory.length - 1];
     if (!lastEntry || lastEntry.status !== status) {
-      order.statusHistory.push({ status, changedAt: new Date() });
+      order.statusHistory.push({
+        status,
+        changedAt: new Date(),
+        changedBy: req.user._id,
+        changedByRole: req.user.role === 'admin' ? 'admin' : 'vendor'
+      });
     }
     await order.save();
 
     ApiResponse.success(res, order, 'Order status updated');
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Raise a dispute on an order (Customer only)
+// @route   POST /api/orders/:id/dispute
+// @access  Private (order's customer only)
+exports.raiseDispute = async (req, res, next) => {
+  try {
+    const { reason, description } = req.body;
+
+    if (!reason) {
+      return ApiResponse.error(res, 'A reason is required to report a problem', 400);
+    }
+
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      return ApiResponse.error(res, 'Order not found', 404);
+    }
+
+    // Only the customer who placed the order can raise a dispute on it.
+    if (order.customer.toString() !== req.user._id.toString()) {
+      return ApiResponse.error(res, 'Not authorized', 403);
+    }
+
+    if (order.dispute && order.dispute.status === 'open') {
+      return ApiResponse.error(res, 'A dispute is already open for this order', 400);
+    }
+
+    order.dispute = {
+      status: 'open',
+      reason,
+      description: description || '',
+      raisedBy: req.user._id,
+      raisedAt: new Date()
+    };
+    await order.save();
+
+    ApiResponse.success(res, order, 'Problem reported. The vendor has been notified.');
+  } catch (error) {
+    next(error);
+  }
+};
+
+// @desc    Resolve a dispute on an order (Vendor or Admin)
+// @route   PUT /api/orders/:id/dispute/resolve
+// @access  Private (Vendor on their own order, or Admin)
+exports.resolveDispute = async (req, res, next) => {
+  try {
+    const { resolution } = req.body;
+
+    if (!resolution) {
+      return ApiResponse.error(res, 'A resolution note is required', 400);
+    }
+
+    const order = await Order.findById(req.params.id);
+    if (!order) {
+      return ApiResponse.error(res, 'Order not found', 404);
+    }
+
+    if (order.vendor.toString() !== req.user._id.toString() && req.user.role !== 'admin') {
+      return ApiResponse.error(res, 'Not authorized', 403);
+    }
+
+    if (!order.dispute || order.dispute.status !== 'open') {
+      return ApiResponse.error(res, 'There is no open dispute on this order', 400);
+    }
+
+    order.dispute.status = 'resolved';
+    order.dispute.resolution = resolution;
+    order.dispute.resolvedBy = req.user._id;
+    order.dispute.resolvedAt = new Date();
+    await order.save();
+
+    ApiResponse.success(res, order, 'Dispute marked as resolved');
   } catch (error) {
     next(error);
   }
@@ -352,5 +467,7 @@ module.exports = {
   approvePayment: exports.approvePayment,
   getMyOrders: exports.getMyOrders,
   getOrder: exports.getOrder,
-  updateOrderStatus: exports.updateOrderStatus
+  updateOrderStatus: exports.updateOrderStatus,
+  raiseDispute: exports.raiseDispute,
+  resolveDispute: exports.resolveDispute
 };

@@ -31,6 +31,15 @@ type ReviewPayload = {
   comment: string;
 };
 
+type DisputePayload = {
+  reason: string;
+  description?: string;
+};
+
+type ResolveDisputePayload = {
+  resolution: string;
+};
+
 type ProfilePayload = {
   fullName?: string;
   phone?: string;
@@ -305,6 +314,20 @@ class ApiClient {
     });
   }
 
+  async raiseDispute(orderId: string, disputeData: DisputePayload) {
+    return this.request(`/orders/${orderId}/dispute`, {
+      method: "POST",
+      body: JSON.stringify(disputeData),
+    });
+  }
+
+  async resolveDispute(orderId: string, resolutionData: ResolveDisputePayload) {
+    return this.request(`/orders/${orderId}/dispute/resolve`, {
+      method: "PUT",
+      body: JSON.stringify(resolutionData),
+    });
+  }
+
   // ===============================
   // REVIEW METHODS
   // ===============================
@@ -357,6 +380,31 @@ class ApiClient {
   async getVendorOrders(params: QueryParams = {}) {
     const queryString = buildQueryString(params);
     return this.request(`/vendor/orders${queryString ? "?" + queryString : ""}`);
+  }
+
+  // ===============================
+  // ADMIN METHODS
+  // ===============================
+
+  async getAdminStats() {
+    return this.request("/admin/stats");
+  }
+
+  async getAdminUsers(params: QueryParams = {}) {
+    const queryString = buildQueryString(params);
+    return this.request(`/admin/users${queryString ? "?" + queryString : ""}`);
+  }
+
+  async setUserStatus(userId: string, isActive: boolean) {
+    return this.request(`/admin/users/${userId}/status`, {
+      method: "PUT",
+      body: JSON.stringify({ isActive }),
+    });
+  }
+
+  async getAdminOrders(params: QueryParams = {}) {
+    const queryString = buildQueryString(params);
+    return this.request(`/admin/orders${queryString ? "?" + queryString : ""}`);
   }
 
   // ===============================

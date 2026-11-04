@@ -10,6 +10,10 @@ dotenv.config();
 
 const app = express();
 
+// Behind Render's proxy: lets rate limiting see each visitor's real IP
+// instead of treating everyone as the same address.
+app.set('trust proxy', 1);
+
 // ===============================
 // IMPORT ROUTES
 // ===============================
@@ -25,9 +29,11 @@ const vendorRoutes = require('./routes/vendor.routes');
 const uploadRoutes = require('./routes/upload.routes');
 const assistantRoutes = require('./routes/assistant.routes');
 const webhookRoutes = require('./routes/webhook.routes');
+const adminRoutes = require('./routes/admin.routes');
 
 // Error Handler
 const errorHandler = require('./middleware/errorHandler');
+const { sanitizeInput, apiLimiter } = require('./middleware/security.middleware');
 
 // ===============================
 // SECURITY MIDDLEWARE
@@ -61,6 +67,11 @@ app.use(cors({
 app.use(express.json({ limit: "10mb" }));
 app.use(express.urlencoded({ extended: true, limit: "10mb" }));
 app.use(cookieParser());
+
+// Strip MongoDB operators ($gt, $ne ...) from all incoming data, then
+// throttle abusive traffic. Both run before any route handler.
+app.use(sanitizeInput);
+app.use("/api", apiLimiter);
 app.use(morgan("dev"));
 
 // ===============================
@@ -134,6 +145,9 @@ console.log("✅ Assistant routes registered");
 
 app.use("/api/webhooks", webhookRoutes);
 console.log("✅ Webhook routes registered");
+
+app.use("/api/admin", adminRoutes);
+console.log("✅ Admin routes registered");
 
 // ===============================
 // 404 HANDLER

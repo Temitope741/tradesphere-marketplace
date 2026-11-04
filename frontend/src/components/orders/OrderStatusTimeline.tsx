@@ -4,6 +4,15 @@ import { cn } from '@/lib/utils';
 export interface StatusHistoryEntry {
   status: string;
   changedAt: string;
+  changedByRole?: 'vendor' | 'admin' | 'system';
+}
+
+// Turns a raw role into the short label shown next to a timeline step, so
+// customers can see who moved the order along, not just when.
+function roleLabel(role?: string) {
+  if (role === 'vendor') return 'by Vendor';
+  if (role === 'admin') return 'by Admin';
+  return '';
 }
 
 interface OrderStatusTimelineProps {
@@ -54,8 +63,9 @@ export function OrderStatusTimeline({ status, statusHistory, createdAt }: OrderS
   // Older orders created before statusHistory existed won't have entries
   // for every step — fall back to the order's own createdAt for "Order
   // Placed" and leave later steps undated if we don't know when they happened.
+  const entryForStep = (stepKey: string) => statusHistory?.find((h) => h.status === stepKey);
   const timeForStep = (stepKey: string) => {
-    const entry = statusHistory?.find((h) => h.status === stepKey);
+    const entry = entryForStep(stepKey);
     if (entry) return entry.changedAt;
     if (stepKey === 'pending') return createdAt;
     return undefined;
@@ -68,6 +78,7 @@ export function OrderStatusTimeline({ status, statusHistory, createdAt }: OrderS
           const isComplete = index <= currentIndex;
           const isCurrent = index === currentIndex;
           const stepTime = timeForStep(step.key);
+          const stepRoleLabel = roleLabel(entryForStep(step.key)?.changedByRole);
           const Icon = step.icon;
 
           return (
@@ -105,6 +116,9 @@ export function OrderStatusTimeline({ status, statusHistory, createdAt }: OrderS
               <p className="text-[11px] text-muted-foreground text-center">
                 {stepTime ? formatDate(stepTime) : isComplete ? '' : '—'}
               </p>
+              {stepTime && stepRoleLabel && (
+                <p className="text-[11px] text-muted-foreground/70 text-center">{stepRoleLabel}</p>
+              )}
             </div>
           );
         })}

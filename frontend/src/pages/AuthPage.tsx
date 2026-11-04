@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -55,6 +55,8 @@ export default function AuthPage() {
             const user = response.data;
             if (user.role === 'vendor') {
               navigate('/vendor/dashboard');
+            } else if (user.role === 'admin') {
+              navigate('/admin/dashboard');
             } else {
               navigate('/');
             }
@@ -95,6 +97,8 @@ export default function AuthPage() {
         // Redirect based on role
         if (response.user.role === 'vendor') {
           navigate('/vendor/dashboard');
+        } else if (response.user.role === 'admin') {
+          navigate('/admin/dashboard');
         } else {
           navigate('/');
         }
@@ -233,6 +237,14 @@ export default function AuthPage() {
                     >
                       {showPassword ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
                     </Button>
+                  </div>
+                  <div className="text-right">
+                    <Link
+                      to="/forgot-password"
+                      className="text-sm text-primary hover:underline"
+                    >
+                      Forgot password?
+                    </Link>
                   </div>
                 </div>
 
